@@ -1,40 +1,36 @@
 import sys
-import json
-from pathlib import Path
 import numpy as np
 import keras
-from keras.datasets import cifar10
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, Activation, Flatten
 from keras.layers import Conv2D, MaxPooling2D
+import imageio
+import random
+import os
 
 # global static variables
 dtype_mult = 255.0 # unit8
-num_classes = 10
-X_shape = (-1, 32, 32, 3)
 epoch = 200
-batch_size = 128
+#test_train_split = 0.8
+# TODO: add your error and valid directories to this list
+ok_dir = ["./ok", ]
+nok_dir = ["./nok", ]
 
 def get_dataset():
-    sys.stdout.write('Loading Dataset\n')
-    sys.stdout.flush()
+    # read input directories and store filenames in list for generator
+    data_list = []
+    for od in ok_dir:
+        for f in os.listdir(od):
+            data_list.append([os.path.join(od, f), 0])
+    for nod in nok_dir:
+        for f in os.listdir(nod):
+            data_list.append([os.path.join(nod, f), 1])
 
-    (X_train, y_train), (X_test, y_test) = cifar10.load_data()
-
-    return X_train, y_train, X_test, y_test
-
-def get_preprocessed_dataset():
-    X_train, y_train, X_test, y_test = get_dataset()
-
-    sys.stdout.write('Preprocessing Dataset\n\n')
-    sys.stdout.flush()
-
-    X_train = X_train.astype('float32') / dtype_mult
-    X_test = X_test.astype('float32') / dtype_mult
-    y_train = keras.utils.to_categorical(y_train, num_classes)
-    y_test = keras.utils.to_categorical(y_test, num_classes)
-
-    return X_train, y_train, X_test, y_test
+    # shuffle data list
+    random.shuffle(data_list)
+    # read one image to get shape
+    image = imageio.imread(data_list[0][0])
+    return data_list, image.shape, 2
 
 def generate_optimizer():
     return keras.optimizers.Adam()
@@ -44,23 +40,23 @@ def compile_model(model):
                   optimizer=generate_optimizer(),
                   metrics=['accuracy'])
 
-def generate_model():
+def generate_model(in_shape, num_classes):
     # check if model exists if exists then load model from saved state
-    if Path('./models/convnet_model.json').is_file():
-        sys.stdout.write('Loading existing model\n\n')
-        sys.stdout.flush()
+    #if Path('./models/convnet_model.json').is_file():
+    #    sys.stdout.write('Loading existing model\n\n')
+    #    sys.stdout.flush()
 
-        with open('./models/convnet_model.json') as file:
-            model = keras.models.model_from_json(json.load(file))
-            file.close()
+    #    with open('./models/convnet_model.json') as file:
+    #        model = keras.models.model_from_json(json.load(file))
+    #        file.close()
 
-        # likewise for model weight, if exists load from saved state
-        if Path('./models/convnet_weights.h5').is_file():
-            model.load_weights('./models/convnet_weights.h5')
+    #    # likewise for model weight, if exists load from saved state
+    #    if Path('./models/convnet_weights.h5').is_file():
+    #        model.load_weights('./models/convnet_weights.h5')
 
-        compile_model(model)
+    #    compile_model(model)
 
-        return model
+    #    return model
 
     sys.stdout.write('Loading new model\n\n')
     sys.stdout.flush()
@@ -68,7 +64,8 @@ def generate_model():
     model = Sequential()
 
     # Conv1 32 32 (3) => 30 30 (32)
-    model.add(Conv2D(32, (3, 3), input_shape=X_shape[1:]))
+    #model.add(Conv2D(32, (3, 3), input_shape=X_shape[1:]))
+    model.add(Conv2D(32, (3, 3), input_shape=in_shape))
     model.add(Activation('relu'))
     # Conv2 30 30 (32) => 28 28 (32)
     model.add(Conv2D(32, (3, 3)))
@@ -100,13 +97,28 @@ def generate_model():
     # compile has to be done impurely
     compile_model(model)
 
-    with open('./models/convnet_model.json', 'w') as outfile:
-        json.dump(model.to_json(), outfile)
-        outfile.close()
+    #with open('./models/convnet_model.json', 'w') as outfile:
+    #    json.dump(model.to_json(), outfile)
+    #    outfile.close()
 
     return model
 
-def train(model, X_train, y_train, X_test, y_test):
+# TODO: adjust batch size according to ram
+def DataGenerator(data_list, num_classes, batch_size=8):
+    start = 0
+    while start < len(data_list):
+        X = []
+        Y = []
+        end = min(start+batch_size, len(data_list) -1)
+        for data, label in data_list[start:end]:
+            image = imageio.imread(data)
+            image = image.astype('float32') / dtype_mult
+            X.append(image)
+            Y.append([label,])
+        yield np.asarray(X), keras.utils.to_categorical(np.asarray(Y), num_classes)
+        start += batch_size
+
+def train(model, gen):
     sys.stdout.write('Training model\n\n')
     sys.stdout.flush()
 
@@ -117,8 +129,9 @@ def train(model, X_train, y_train, X_test, y_test):
         epoch_count += 1
         sys.stdout.write('Epoch count: ' + str(epoch_count) + '\n')
         sys.stdout.flush()
-        model.fit(X_train, y_train, batch_size=batch_size,
-                  nb_epoch=1, validation_data=(X_test, y_test))
+        model.fit_generator(gen,
+                            samples_per_epoch=4,
+                            nb_epoch=1, validation_data=None)
         sys.stdout.write('Epoch {} done, saving model to file\n\n'.format(epoch_count))
         sys.stdout.flush()
         model.save_weights('./models/convnet_weights.h5')
@@ -131,12 +144,14 @@ def get_accuracy(pred, real):
     return np.sum(result) / len(result)
 
 def main():
-    sys.stdout.write('Welcome to CIFAR-10 Hello world of CONVNET!\n\n')
-    sys.stdout.flush()
-    X_train, y_train, X_test, y_test = get_preprocessed_dataset()
-    model = generate_model()
-    model = train(model, X_train, y_train, X_test, y_test)
-
+    data_list, in_shape, num_classes = get_dataset()
+    print("Read data list %d files" % len(data_list))
+    print("Image shape:")
+    print(in_shape)
+    print("Number of classes:")
+    print(num_classes)
+    model = generate_model(in_shape, num_classes)
+    model = train(model, DataGenerator(data_list, num_classes))
 
 if __name__ == "__main__":
     # execute only if run as a script
